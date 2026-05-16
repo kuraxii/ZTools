@@ -82,6 +82,7 @@ class WindowManager {
   private suppressBlurHide: boolean = false // 临时抑制 blur 事件隐藏窗口（文件关联打开等场景）
   private lastBlurHideTime: number = 0 // blur 导致隐藏窗口的时间戳（用于解决托盘点击竞态）
   private blurHideTimer: ReturnType<typeof setTimeout> | null = null // Linux blur 延迟隐藏定时器
+  private windowVisibilityIntent: 'shown' | 'hidden' = 'hidden' // 用户期望的窗口显隐状态，用于打断系统 show/hide 动画
   private appShortcuts: Map<string, string> = new Map() // 应用快捷键映射表 (快捷键 -> 目标指令)
   private wakeupBlacklist: Array<{ app: string; bundleId?: string; label?: string }> = [] // 唤醒黑名单
   private onThemeInfoChanged: (() => void) | null = null // 主题信息变更回调钩子
@@ -407,7 +408,7 @@ class WindowManager {
     } else {
       // 左键点击：切换窗口显示
       this.tray.on('click', () => {
-        this.toggleWindow()
+        this.toggleWindow('tray')
       })
 
       // 右键点击：显示菜单
@@ -429,7 +430,7 @@ class WindowManager {
       {
         label: '显示/隐藏',
         click: () => {
-          this.toggleWindow()
+          this.toggleWindow('tray')
         }
       },
       {
@@ -501,7 +502,7 @@ class WindowManager {
     if (this.isDoubleTapShortcut(keyToRegister)) {
       const modifier = keyToRegister.split('+')[0]
       doubleTapManager.register(modifier, () => {
-        this.toggleWindow()
+        this.toggleWindow('shortcut')
       })
       this.currentShortcut = keyToRegister
       this.isDoubleTapMode = true
@@ -511,7 +512,7 @@ class WindowManager {
 
     // 普通快捷键模式：通过 globalShortcut 注册
     const ret = globalShortcut.register(keyToRegister, () => {
-      this.toggleWindow()
+      this.toggleWindow('shortcut')
     })
 
     if (!ret) {
@@ -520,11 +521,11 @@ class WindowManager {
       if (oldIsDoubleTapMode) {
         const oldModifier = oldShortcut.split('+')[0]
         doubleTapManager.register(oldModifier, () => {
-          this.toggleWindow()
+          this.toggleWindow('shortcut')
         })
       } else {
         globalShortcut.register(oldShortcut, () => {
-          this.toggleWindow()
+          this.toggleWindow('shortcut')
         })
       }
       return false
@@ -569,29 +570,23 @@ class WindowManager {
   /**
    * 切换窗口显示/隐藏
    */
-  private toggleWindow(): void {
+  private toggleWindow(source: 'shortcut' | 'tray' = 'shortcut'): void {
     if (!this.mainWindow) return
 
     const isFocused = this.mainWindow.isFocused()
     const isVisible = this.mainWindow.isVisible()
 
-    // 判断窗口是否聚焦显示
-    // 修复：同时检查聚焦和可见状态，避免alert弹窗后判断错误
-    if (isFocused && isVisible) {
-      // 窗口已显示且聚焦 → 隐藏
-
-      // 记录当前的焦点状态（在隐藏之前）
-      this.recordFocusState()
-
-      this.mainWindow.blur()
-      this.mainWindow.hide()
-      this.restorePreviousWindow()
+    // 以“用户意图”优先判断显隐，避免系统 show 动画期间 isFocused() 尚未稳定时，
+    // 第二次快捷键被误判为继续显示，导致无法打断动画隐藏面板。
+    if (this.windowVisibilityIntent === 'shown' || (isFocused && isVisible)) {
+      // 窗口正在显示、已经显示或聚焦显示 → 隐藏
+      this.hideWindow()
     } else {
       // 窗口已隐藏或失焦 → 显示并强制激活
       // 但如果是刚刚因为 blur 事件隐藏的（点击托盘图标导致失焦），
       // 说明用户意图是隐藏窗口，不应再重新显示
       const timeSinceBlurHide = Date.now() - this.lastBlurHideTime
-      if (timeSinceBlurHide < 300) {
+      if (source === 'tray' && timeSinceBlurHide < 300) {
         return
       }
       this.showWindow()
@@ -658,6 +653,7 @@ class WindowManager {
    */
   public showWindow(): void {
     if (!this.mainWindow) return
+    this.windowVisibilityIntent = 'shown'
 
     // 开始恢复焦点流程，防止 focus 事件监听器修改 lastFocusTarget
     this.isRestoringFocus = true
@@ -672,6 +668,7 @@ class WindowManager {
 
       // 唤醒黑名单检查：当前活动窗口在黑名单中时不弹出
       if (this.isAppInWakeupBlacklist(currentWindow)) {
+        this.windowVisibilityIntent = 'hidden'
         this.isRestoringFocus = false
         return
       }
@@ -692,6 +689,7 @@ class WindowManager {
    */
   public hideWindow(_restoreFocus: boolean = true): void {
     console.log('[Window] 隐藏窗口', _restoreFocus)
+    this.windowVisibilityIntent = 'hidden'
 
     // 记录当前的焦点状态（在隐藏之前）
     this.recordFocusState()
