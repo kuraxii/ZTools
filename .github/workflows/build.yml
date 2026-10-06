@@ -46,6 +46,11 @@ jobs:
             arch: x64
             build_cmd: pnpm run build:win
             signing_identity: ''
+          # Linux x64（deb/rpm/AppImage，临时验证 GlobalShortcuts portal 打包）
+          - os: ubuntu-latest
+            arch: x64
+            build_cmd: pnpm run build:linux
+            signing_identity: ''
 
     steps:
       - name: Check out git repository
@@ -164,6 +169,9 @@ jobs:
             dist/*.zip
             dist/*.yml
             dist/*.blockmap
+            dist/*.deb
+            dist/*.rpm
+            dist/*.AppImage
           if-no-files-found: warn
 
   release:
