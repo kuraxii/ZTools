@@ -80,9 +80,11 @@ mac:
 dmg:
   artifactName: ${name}-${version}-${os}-${arch}.${ext}
 linux:
+  executableName: top.z-tools
   target:
     - AppImage
     - deb
+    - rpm
   maintainer: electronjs.org
   category: Utility
 appImage:

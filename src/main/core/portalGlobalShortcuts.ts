@@ -47,10 +47,9 @@ const KGA_SET_FLAGS = 6
  */
 const QT_KEYSEQUENCE_CHORD_LENGTH = 4
 
-/** 生产环境 app_id（必须与 electron-builder 安装的 top.z-tools.desktop 文件名一致） */
-const PROD_APP_ID = 'top.z-tools'
-/** 开发环境 app_id（独立身份，避免 ~/.local 下的 dev desktop 文件遮蔽生产安装的同名文件） */
-const DEV_APP_ID = 'ztools-dev'
+/** 应用 app_id；portal 用它校验 XDG 数据目录下存在同名 desktop 文件 */
+const PORTAL_APP_ID = 'top.z-tools'
+export { PORTAL_APP_ID }
 
 /** D-Bus 连接名称等待超时 */
 const BUS_NAME_TIMEOUT_MS = 3000
@@ -398,15 +397,6 @@ export function buildQtChordArray(keyCode: number): number[] {
 }
 
 /**
- * 解析当前运行模式对应的 portal app_id
- * @param isDev 是否开发模式（未打包）
- * @returns app_id（生产 "top.z-tools" / 开发 "ztools-dev"）
- */
-export function resolvePortalAppId(isDev: boolean): string {
-  return isDev ? DEV_APP_ID : PROD_APP_ID
-}
-
-/**
  * 规范化触发键文本用于对比
  * KDE 返回的 trigger_description 是本地化文本（如 "Alt+Z"），与 XDG 规范格式（"ALT+z"）
  * 仅存在大小写差异，统一小写并去除空白后比较
@@ -609,7 +599,7 @@ class PortalGlobalShortcutsManager {
       // 预注册成功的项在 BindShortcuts 时不传 preferred_trigger，走静默沿用路径；
       // 非 KDE 环境（无 kglobalaccel）自动跳过，回退 preferred_trigger 授权对话框路径。
       // forceSetKeys 仅影响 KDE 有键位的处理：显式改键时覆盖而非沿用系统侧既有键位
-      const appId = resolvePortalAppId(!app.isPackaged)
+      const appId = PORTAL_APP_ID
       const appFriendly = app.isPackaged ? 'ZTools' : 'ZTools (Dev)'
       const preregOk = await this.preRegisterKdeShortcuts(appId, appFriendly, converted, {
         overwrite: forceSetKeys
@@ -880,7 +870,7 @@ class PortalGlobalShortcutsManager {
     // 开发模式下确保占位 .desktop 文件存在（生产模式由 electron-builder 安装）
     this.ensureDesktopFile()
 
-    const appId = resolvePortalAppId(!app.isPackaged)
+    const appId = PORTAL_APP_ID
     try {
       const registry = this.portalObject.getInterface(REGISTRY_IFACE) as unknown as {
         Register: (appId: string, options: Record<string, unknown>) => Promise<void>
@@ -897,20 +887,31 @@ class PortalGlobalShortcutsManager {
 
   /**
    * 确保当前 app_id 对应的 .desktop 文件存在（仅开发模式）
+   * XDG 数据目录中已有同名文件时跳过（身份校验已满足，也避免遮蔽生产条目），否则写占位文件
    * @returns 无返回值
    */
   private ensureDesktopFile(): void {
-    // 生产模式由 electron-builder 安装 desktop 文件，无需处理
+    // 生产模式由 electron-builder 安装 desktop 文件
     if (app.isPackaged) return
 
     try {
-      // 仅开发模式会走到这里，固定使用 dev 身份
-      const appId = resolvePortalAppId(true)
-      const applicationsDir = process.env.XDG_DATA_HOME
+      const appId = PORTAL_APP_ID
+      const localApplicationsDir = process.env.XDG_DATA_HOME
         ? path.join(process.env.XDG_DATA_HOME, 'applications')
         : path.join(app.getPath('home'), '.local', 'share', 'applications')
-      fs.mkdirSync(applicationsDir, { recursive: true })
-      const desktopPath = path.join(applicationsDir, `${appId}.desktop`)
+      const systemApplicationsDirs = (process.env.XDG_DATA_DIRS ?? '/usr/local/share:/usr/share')
+        .split(':')
+        .filter(Boolean)
+        .map((dir) => path.join(dir, 'applications'))
+
+      // 已有同名 desktop 文件时跳过写入
+      const gateSatisfied = [localApplicationsDir, ...systemApplicationsDirs].some((dir) =>
+        fs.existsSync(path.join(dir, `${appId}.desktop`))
+      )
+      if (gateSatisfied) return
+
+      fs.mkdirSync(localApplicationsDir, { recursive: true })
+      const desktopPath = path.join(localApplicationsDir, `${appId}.desktop`)
 
       // Exec 指向当前 dev 运行命令，保持语义真实；portal 不校验其可执行性
       const content = buildDesktopFileContent({
@@ -1155,7 +1156,7 @@ class PortalGlobalShortcutsManager {
     if (!this.bus) return keys
 
     try {
-      // kglobalaccel 组件对象路径会把所有非字母数字字符替换为下划线（如 ztools-dev → ztools_dev）
+      // kglobalaccel 组件对象路径会把所有非字母数字字符替换为下划线（如 top.z-tools → top_z_tools）
       const componentPath = `/component/${appId.replace(/[^a-zA-Z0-9]/g, '_')}`
       const componentObject = await this.bus.getProxyObject(KGA_NAME, componentPath)
       const componentIface = componentObject.getInterface(KGA_COMPONENT_IFACE) as unknown as {
@@ -1183,7 +1184,7 @@ class PortalGlobalShortcutsManager {
    */
   private async unregisterKdeComponentActions(): Promise<void> {
     if (!this.bus || !this.dbusModule) return
-    const appId = resolvePortalAppId(!app.isPackaged)
+    const appId = PORTAL_APP_ID
 
     try {
       const componentKeys = await this.readKdeComponentKeys(appId)

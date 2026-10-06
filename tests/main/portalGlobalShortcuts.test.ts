@@ -15,7 +15,7 @@ import {
   electronAcceleratorToQtKeyCode,
   buildQtChordArray,
   buildDesktopFileContent,
-  resolvePortalAppId,
+  PORTAL_APP_ID,
   normalizeTriggerText,
   isWaylandSession
 } from '../../src/main/core/portalGlobalShortcuts'
@@ -173,10 +173,9 @@ describe('buildQtChordArray', () => {
   })
 })
 
-describe('resolvePortalAppId', () => {
-  it('开发模式返回 ztools-dev，生产模式返回 top.z-tools', () => {
-    expect(resolvePortalAppId(true)).toBe('ztools-dev')
-    expect(resolvePortalAppId(false)).toBe('top.z-tools')
+describe('PORTAL_APP_ID', () => {
+  it('所有环境统一使用与 electron-builder appId 同步的 app_id', () => {
+    expect(PORTAL_APP_ID).toBe('top.z-tools')
   })
 })
 
