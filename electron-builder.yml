@@ -80,9 +80,12 @@ mac:
 dmg:
   artifactName: ${name}-${version}-${os}-${arch}.${ext}
 linux:
+  # 与 PORTAL_APP_ID 对齐，desktop 文件安装为 ztools.desktop
+  executableName: ztools
   target:
     - AppImage
     - deb
+    - rpm
   maintainer: electronjs.org
   category: Utility
 appImage:

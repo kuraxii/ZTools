@@ -26,6 +26,7 @@ import { getLogsPath } from './core/appData/appDataPaths'
 import { loadInternalPlugins } from './core/internalPluginLoader'
 import pluginManager from './managers/pluginManager'
 import windowManager from './managers/windowManager'
+import { detectShortcutBackend } from './core/shortcutBackend'
 
 const isE2ETest = process.env.ZTOOLS_E2E === '1'
 
@@ -117,9 +118,11 @@ if (process.env.NODE_ENV !== 'production') {
 // 导出函数供 API 使用
 /**
  * 更新主窗口使用的全局唤起快捷键。
+ * @param shortcut 新的快捷键（Electron 加速键格式）
+ * @param options.forceSetKeys portal 后端（KDE Wayland）强制覆盖系统侧既有键位（应用内显式改键）
  */
-export function updateShortcut(shortcut: string): boolean {
-  return windowManager.registerShortcut(shortcut)
+export function updateShortcut(shortcut: string, options?: { forceSetKeys?: boolean }): boolean {
+  return windowManager.registerShortcut(shortcut, options)
 }
 
 /**
@@ -163,8 +166,12 @@ app.whenReady().then(async () => {
     }
   }
 
-  // 注册全局快捷键
-  if (!isE2ETest) windowManager.registerShortcut()
+  // 注册全局快捷键：注册前先完成快捷键后端分发探测（loadAndApplySettings 也是异步的，
+  // 若不在此处等待，本行的 registerShortcut 可能拿不到已探测的后端）
+  if (!isE2ETest) {
+    await detectShortcutBackend()
+    windowManager.registerShortcut()
+  }
 
   // 初始化悬浮球（从配置决定是否显示）
   if (!isE2ETest) await floatingBallManager.init()

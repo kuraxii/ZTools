@@ -19,6 +19,8 @@ import databaseAPI from '../api/shared/database'
 import dndManager, { isFullscreenWindow } from '../core/dndManager.js'
 import doubleTapManager from '../core/doubleTapManager.js'
 import globalInputManager from '../core/globalInputManager.js'
+import portalGlobalShortcuts, { electronAcceleratorToXdg } from '../core/portalGlobalShortcuts.js'
+import { getShortcutBackend } from '../core/shortcutBackend.js'
 import { WindowManager as NativeWindowManager } from '../core/native/index.js'
 import clipboardManager from './clipboardManager'
 
@@ -742,24 +744,36 @@ class WindowManager {
 
   /**
    * 注册全局快捷键（支持双击修饰键）
+   * @param shortcut 要注册的快捷键（缺省时沿用当前键位）
+   * @param options.forceSetKeys Linux Wayland 下强制覆盖 portal 侧既有键位（应用内显式改键）
+   * @returns 注册成功时返回 true；普通模式下键位被占用时返回 false
    */
-  public registerShortcut(shortcut?: string): boolean {
+  public registerShortcut(shortcut?: string, options?: { forceSetKeys?: boolean }): boolean {
     const keyToRegister = shortcut || this.currentShortcut
 
     // 保存旧的快捷键信息，用于注册失败时回滚
     const oldShortcut = this.currentShortcut
     const oldIsDoubleTapMode = this.isDoubleTapMode
 
-    // 注销旧的呼出快捷键（仅注销当前快捷键，不影响其他全局快捷键）
-    if (this.isDoubleTapMode) {
-      const oldModifier = this.currentShortcut.split('+')[0]
-      doubleTapManager.unregister(oldModifier)
-    } else {
-      globalShortcut.unregister(this.currentShortcut)
+    // 注销旧的呼出快捷键（仅注销当前快捷键，不影响其他全局快捷键）；
+    // 库中可能存有历史脏数据（如本地化文本 "Ctrl+空格"），注销无效加速键会抛 TypeError，需吞掉
+    try {
+      if (this.isDoubleTapMode) {
+        const oldModifier = this.currentShortcut.split('+')[0]
+        doubleTapManager.unregister(oldModifier)
+      } else {
+        globalShortcut.unregister(this.currentShortcut)
+      }
+    } catch (error) {
+      console.warn('注销旧快捷键失败（忽略）:', this.currentShortcut, error)
     }
 
     // 双击修饰键模式：通过 doubleTapManager 注册
     if (this.isDoubleTapShortcut(keyToRegister)) {
+      // 从 portal 模式切换到双击修饰键时，清除原 portal 全局键绑定（原生模式无需清理）
+      if (getShortcutBackend() === 'portal') {
+        void portalGlobalShortcuts.clearShortcuts()
+      }
       const modifier = keyToRegister.split('+')[0]
       doubleTapManager.register(modifier, () => {
         if (!dndManager.shouldIgnoreHotkeys()) this.toggleWindowFromDoubleTap()
@@ -768,6 +782,14 @@ class WindowManager {
       this.isDoubleTapMode = true
       console.log(`双击修饰键呼出快捷键 ${keyToRegister} 注册成功`)
       return true
+    }
+
+    // 快捷键后端分发：仅 KDE Wayland 启用 portal（Electron globalShortcut 在 Wayland 下失效），
+    // 其余环境一律走原生 globalShortcut 流程
+    if (getShortcutBackend() === 'portal') {
+      return this.registerShortcutViaPortal(keyToRegister, {
+        forceSetKeys: options?.forceSetKeys === true
+      })
     }
 
     // 普通快捷键模式：通过 globalShortcut 注册
@@ -1462,10 +1484,71 @@ class WindowManager {
   }
 
   /**
+   * 通过 GlobalShortcuts portal 注册唤起快捷键（仅 KDE Wayland 后端启用）
+   * Electron globalShortcut 依赖 X11 全局抓取，在 Wayland 下不可用；
+   * portal 注册是异步流程，此处乐观返回 true，实际结果通过日志与管理器状态上报。
+   * 键位变更（应用内显式改键，forceSetKeys）会直接程序化写入 kglobalaccel 静默生效；
+   * 常规注册不覆盖系统侧既有键位，实际触发键由回写同步上报
+   * @param keyToRegister 要注册的快捷键（Electron 加速键格式）
+   * @param options.forceSetKeys 强制覆盖系统侧既有键位（应用内显式改键）
+   * @returns 提交成功时返回 true
+   */
+  private registerShortcutViaPortal(
+    keyToRegister: string,
+    options?: { forceSetKeys?: boolean }
+  ): boolean {
+    // 先校验加速键可转换为 XDG 格式：库中可能存有历史脏数据
+    // （如回写同步曾把本地化文本 "Ctrl+空格" 入库），直接注册会失败且污染状态
+    const conversion = electronAcceleratorToXdg(keyToRegister)
+    if (!conversion.ok) {
+      console.error(`[PortalShortcuts] 快捷键 "${keyToRegister}" 无法注册: ${conversion.error}`)
+      return false
+    }
+
+    this.currentShortcut = keyToRegister
+    this.isDoubleTapMode = false
+
+    // 异步提交注册：呼出键作为基础绑定提交，管理器自动与指令快捷键局部集合合并全量重绑；
+    // forceSetKeys 在改键时覆盖系统侧既有键位。结果落在日志
+    void portalGlobalShortcuts
+      .setBaseBindings(
+        [
+          {
+            id: 'show-main-window',
+            accelerator: keyToRegister,
+            description: '呼出 ZTools 主窗口',
+            callback: () => {
+              if (!dndManager.shouldIgnoreHotkeys()) this.toggleWindow()
+            }
+          }
+        ],
+        { forceSetKeys: options?.forceSetKeys === true }
+      )
+      .then((results) => {
+        const failed = results.filter((r) => !r.success)
+        if (failed.length > 0) {
+          console.error('[PortalShortcuts] 唤起快捷键注册失败:', JSON.stringify(failed))
+        } else {
+          console.log(`快捷键 ${keyToRegister} 已通过 GlobalShortcuts portal 注册（Wayland）`)
+        }
+      })
+      .catch((error) => {
+        console.error('[PortalShortcuts] 唤起快捷键注册异常:', error)
+      })
+
+    return true
+  }
+
+  /**
    * 注销所有快捷键
    */
   public unregisterAllShortcuts(): void {
     globalShortcut.unregisterAll()
+    // 仅 portal 后端需要销毁 D-Bus 会话；portal 会话随退出销毁即可，
+    // 保留 kglobalaccel 配置供下次启动静默重绑
+    if (getShortcutBackend() === 'portal') {
+      portalGlobalShortcuts.destroy()
+    }
     doubleTapManager.unregisterAll()
     globalInputManager.release(WINDOW_BLUR_DRAG_INPUT_CONSUMER)
     this.mouseStateTrackingStarted = false

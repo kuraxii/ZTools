@@ -51,6 +51,7 @@
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
     "@electron/asar": "^4.1.0",
+    "@jellybrick/dbus-next": "^0.11.4",
     "adm-zip": "^0.5.16",
     "builder-util-runtime": "9.7.0",
     "chokidar": "^4.0.3",
