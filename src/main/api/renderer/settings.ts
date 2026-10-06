@@ -8,6 +8,7 @@ import {
   WindowManager as NativeWindowManager
 } from '../../core/native/index.js'
 import { getCurrentShortcut, updateShortcut } from '../../appMain.js'
+import { detectShortcutBackend, getShortcutBackend } from '../../core/shortcutBackend.js'
 
 import dndManager from '../../core/dndManager.js'
 import doubleTapManager from '../../core/doubleTapManager.js'
@@ -269,6 +270,9 @@ export class SettingsAPI {
    */
   private async loadAndApplySettings(): Promise<void> {
     try {
+      // 初始化快捷键后端分发（仅 KDE Wayland 走 portal，其余回退原生 globalShortcut）。
+      // 必须 await：后续按配置注册快捷键时依赖同步读取探测结果
+      await detectShortcutBackend()
       const data = databaseAPI.dbGet('settings-general')
       console.log('[Settings] 加载到的设置:', data)
       // 应用托盘图标显示设置（默认显示，在 if(data) 块外确保首次启动也能创建托盘）
@@ -409,6 +413,11 @@ export class SettingsAPI {
   // 更新快捷键
   public updateShortcut(shortcut: string): { success: boolean; error?: string } {
     try {
+      // portal 后端改键走 forceSetKeys 覆盖系统侧既有键位；常规注册路径不覆盖
+      if (getShortcutBackend() === 'portal') {
+        updateShortcut(shortcut, { forceSetKeys: true })
+        return { success: true }
+      }
       const success = updateShortcut(shortcut)
       if (success) {
         return { success: true }
