@@ -488,6 +488,8 @@ class PortalGlobalShortcutsManager {
   private matchRuleAdded = false
   /** 当前生效的绑定集合（含 portal 返回的触发描述），供 portal 重启后重绑 */
   private activeBindings: ActiveBinding[] = []
+  /** 基础绑定（呼出键等常驻绑定）：每次 setShortcuts 全量提交时自动合并，不会被调用方的局部集合覆盖 */
+  private baseBindings: PortalShortcutBinding[] = []
   /** 进行中的重绑计数，避免 portal 重启风暴导致并发重建 */
   private rebinding = false
   /** 注册串行化链条：同一时刻只允许一个 setShortcuts 执行流程 */
@@ -513,8 +515,10 @@ class PortalGlobalShortcutsManager {
     options?: { forceSetKeys?: boolean }
   ): Promise<PortalShortcutResult[]> {
     const forceSetKeys = options?.forceSetKeys === true
+    // 基础绑定（呼出键等）自动并入提交集合，调用方只需关注自己的局部集合
+    const effectiveShortcuts = [...this.baseBindings, ...shortcuts]
     const signature = JSON.stringify(
-      shortcuts
+      effectiveShortcuts
         .map((s) => [s.id, s.accelerator])
         .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
     )
@@ -539,7 +543,7 @@ class PortalGlobalShortcutsManager {
         console.log('[PortalShortcuts] 跳过重复的快捷键注册请求（串行队列内去重）')
         return this.lastRegistrationResults
       }
-      const results = await this.doSetShortcuts(shortcuts, forceSetKeys)
+      const results = await this.doSetShortcuts(effectiveShortcuts, forceSetKeys)
       // 仅成功的注册进入去重缓存；失败结果保留以便重试。
       // 强制设键同样更新缓存：完成后系统键位已等于注册值，后续重复注册可去重
       if (results.length > 0 && results.every((r) => r.success)) {
@@ -649,6 +653,7 @@ class PortalGlobalShortcutsManager {
     if (process.platform !== 'linux') return
 
     this.activeBindings = []
+    this.baseBindings = []
     // 清空后旧的去重缓存失效，后续同集合注册需真正执行
     this.lastRegistrationSignature = null
     this.lastRegistrationResults = null
@@ -691,6 +696,7 @@ class PortalGlobalShortcutsManager {
    */
   destroy(): void {
     this.activeBindings = []
+    this.baseBindings = []
     this.sessionPath = null
     this.identityRegistered = false
     this.messageListenerInstalled = false
@@ -986,6 +992,35 @@ class PortalGlobalShortcutsManager {
       throw new Error('CreateSession 响应缺少 session_handle')
     }
     return sessionHandle
+  }
+
+  /**
+   * 设置基础绑定并立即全量重绑
+   * 基础绑定是常驻绑定（如呼出键），后续任何调用方提交的局部集合都会自动合并它们；
+   * 传空数组表示清除基础绑定（如切换到双击修饰键模式）
+   * @param bindings 基础绑定集合
+   * @returns 每个快捷键的注册结果；非 Linux 平台返回空数组
+   */
+  async setBaseBindings(
+    bindings: PortalShortcutBinding[],
+    options?: { forceSetKeys?: boolean }
+  ): Promise<PortalShortcutResult[]> {
+    this.baseBindings = bindings
+    // 非 portal 环境不提交 D-Bus，仅记录；portal 重启恢复时 activeBindings 为空则只重连
+    if (process.platform !== 'linux') return []
+    if (bindings.length === 0) {
+      await this.clearShortcuts()
+      return []
+    }
+    // 全量重绑会覆盖集合外的绑定：把 activeBindings 里不属于新基础绑定的条目
+    // （即各调用方注册的指令快捷键，携带其 callback）一并合并提交，避免被冲掉
+    const baseIds = new Set(bindings.map((b) => b.id))
+    const preserved = this.activeBindings
+      .filter((a) => !baseIds.has(a.binding.id))
+      .map((a) => a.binding)
+    return await this.setShortcuts([...bindings, ...preserved], {
+      forceSetKeys: options?.forceSetKeys === true
+    })
   }
 
   /**

@@ -1508,9 +1508,10 @@ class WindowManager {
     this.currentShortcut = keyToRegister
     this.isDoubleTapMode = false
 
-    // 异步提交注册：不阻塞同步调用方；结果落在日志
+    // 异步提交注册：呼出键作为基础绑定提交，管理器自动与指令快捷键局部集合合并全量重绑；
+    // forceSetKeys 在改键时覆盖系统侧既有键位。结果落在日志
     void portalGlobalShortcuts
-      .setShortcuts(
+      .setBaseBindings(
         [
           {
             id: 'show-main-window',

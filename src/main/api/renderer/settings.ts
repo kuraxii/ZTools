@@ -9,6 +9,9 @@ import {
 } from '../../core/native/index.js'
 import { getCurrentShortcut, updateShortcut } from '../../appMain.js'
 import { detectShortcutBackend, getShortcutBackend } from '../../core/shortcutBackend.js'
+import portalGlobalShortcuts, {
+  electronAcceleratorToXdg
+} from '../../core/portalGlobalShortcuts.js'
 
 import dndManager from '../../core/dndManager.js'
 import doubleTapManager from '../../core/doubleTapManager.js'
@@ -76,6 +79,11 @@ export class SettingsAPI {
   private globalShortcutTargets = new Map<string, string>()
   private globalShortcutPreparations = new Map<string, GlobalShortcutPreparation>()
   private nativeOptimizedShortcutSet = new Set<string>()
+  // portal 后端当前的指令快捷键集合（KDE Wayland 专用）：键为加速键、值为绑定参数
+  private portalShortcutBindings = new Map<
+    string,
+    { target: string; preparation: GlobalShortcutPreparation }
+  >()
   private globalShortcutKeyboardStateReleasers = new Map<string, () => void>()
   // 全局快捷键触发流程执行中时，后续触发会被忽略，避免重复复制和重复启动。
   private isGlobalShortcutTriggering = false
@@ -107,6 +115,38 @@ export class SettingsAPI {
       preScreenshotOptimization &&
       !this.isDoubleTapShortcut(shortcut)
     )
+  }
+
+  // portal 后端全量重绑当前指令快捷键集合；失败仅记日志，不回滚本地集合（下次变更会再次全量提交）
+  private async rebindPortalShortcuts(): Promise<void> {
+    if (getShortcutBackend() !== 'portal') return
+
+    // 呼出键作为基础绑定由管理器自动合并，这里只提交指令快捷键局部集合
+    const bindings = [...this.portalShortcutBindings.entries()].map(([accelerator, entry]) => ({
+      id: `global-shortcut-${accelerator}`,
+      accelerator,
+      description: entry.target,
+      callback: () => {
+        const preparation = this.globalShortcutPreparations.get(accelerator)
+        if (!preparation) {
+          console.warn(`[PortalShortcuts] 未找到指令快捷键预处理信息: ${accelerator}`)
+          return
+        }
+        void this.triggerGlobalShortcut(accelerator, preparation)
+      }
+    }))
+
+    try {
+      const results = await portalGlobalShortcuts.setShortcuts(bindings, { forceSetKeys: true })
+      const failed = results.filter((r) => !r.success)
+      if (failed.length > 0) {
+        console.error('[Settings] portal 指令快捷键部分绑定失败:', JSON.stringify(failed))
+      } else if (bindings.length > 0) {
+        console.log(`[Settings] portal 指令快捷键全量重绑成功，共 ${bindings.length} 个`)
+      }
+    } catch (error) {
+      console.error('[Settings] portal 指令快捷键重绑异常:', error)
+    }
   }
 
   // 注册单个 native 优化快捷键，并确保底层监听存在。
@@ -175,6 +215,13 @@ export class SettingsAPI {
 
     if (this.nativeOptimizedShortcutSet.has(shortcut)) {
       this.unregisterNativeOptimizedShortcut(shortcut)
+      return
+    }
+
+    // portal 后端：从绑定集合移除并全量重绑；同时注销 Electron 侧的同键注册避免残留
+    if (this.portalShortcutBindings.has(shortcut)) {
+      this.portalShortcutBindings.delete(shortcut)
+      void this.rebindPortalShortcuts()
       return
     }
 
@@ -493,6 +540,26 @@ export class SettingsAPI {
           void this.triggerGlobalShortcut(shortcut, preparation)
         })
         console.log(`成功注册双击修饰键快捷键: ${shortcut} -> ${target}`)
+        return { success: true }
+      }
+
+      // portal 后端（KDE Wayland）：Electron globalShortcut 在 Wayland 下假成功真失效，
+      // 指令快捷键统一走 portal。加入绑定集合并全量重绑，preparation 已在上面预构建
+      if (getShortcutBackend() === 'portal') {
+        const conversion = electronAcceleratorToXdg(shortcut)
+        if (!conversion.ok) {
+          this.releaseGlobalShortcutKeyboardState(shortcut)
+          this.globalShortcutConfigs.delete(shortcut)
+          this.globalShortcutTargets.delete(shortcut)
+          this.globalShortcutPreparations.delete(shortcut)
+          return {
+            success: false,
+            error: `快捷键 ${shortcut} 无法通过 portal 注册: ${conversion.error}`
+          }
+        }
+        this.portalShortcutBindings.set(shortcut, { target, preparation })
+        void this.rebindPortalShortcuts()
+        console.log(`成功注册全局快捷键: ${shortcut} -> ${target}`)
         return { success: true }
       }
 
