@@ -407,6 +407,9 @@ class WindowManager {
       // 会导致鼠标移出窗口时 blur 就被触发从而隐藏窗口。
       // Linux 下我们通过 setAlwaysOnTop 保持置顶层级，不需要 panel 类型。
       delete windowConfig.type
+      // Linux/X11 + frame: false 下 hasShadow: true 会让 KWin 尝试合成阴影，
+      // XWayland 下阴影合成与窗口表面更新不同步导致拖拽拖影，故关闭。
+      windowConfig.hasShadow = false
     }
 
     this.mainWindow = new BrowserWindow(windowConfig)
