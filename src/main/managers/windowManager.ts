@@ -1223,10 +1223,28 @@ class WindowManager {
 
     this.syncAnchorToDisplayOf(x, y)
     this.mainWindow.setPosition(x, y, false)
+    this.clearX11Ghosting()
   }
 
   /**
-   * 把“空间锚点”同步到指定坐标所在显示器。
+   * Linux/XWayland 合成缓存修复：KWin 不会随 setPosition 自动失效
+   * 旧窗口区域，导致拖拽后旧位置残留像素。微移窗口触发表面重建。
+   * @returns 无返回值
+   */
+  public clearX11Ghosting(): void {
+    if (!platform.isLinux || !this.mainWindow || this.mainWindow.isDestroyed()) return
+
+    const [x, y] = this.mainWindow.getPosition()
+    const [w, h] = this.mainWindow.getSize()
+    this.mainWindow.setBounds({ x: x + 1, y, width: w, height: h })
+    setImmediate(() => {
+      if (!this.mainWindow || this.mainWindow.isDestroyed()) return
+      this.mainWindow.setBounds({ x, y, width: w, height: h })
+    })
+  }
+
+  /**
+   * 把"空间锚点"同步到指定坐标所在显示器。
    *
    * 子窗口会被限制在父窗口所在显示器，因此锚点必须与主窗口处于同一显示器；仅在显示器发生变化
    * 时才移动锚点，避免移动锚点时带着子窗口抖动。锚点移到目标显示器工作区左上角即可（1x1 不可见

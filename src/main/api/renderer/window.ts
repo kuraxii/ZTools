@@ -135,6 +135,12 @@ export class WindowAPI {
     } else if (this.mainWindow) {
       this.mainWindow.setPosition(x, y)
     }
+
+    // Linux/XWayland 下 KWin 合成缓存不会随 setPosition 自动失效，
+    // 旧位置残留像素。调用 WindowManager 的微移刷新清除拖影。
+    if (this.mainWindow) {
+      windowManager.clearX11Ghosting()
+    }
   }
 
   public setWindowOpacity(opacity: number): void {
