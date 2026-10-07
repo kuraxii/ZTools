@@ -1,0 +1,63 @@
+name: Linux
+
+on:
+  push:
+    branches: [main, 'feat/*']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (ubuntu-latest x64)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out git repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 9
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+
+      - name: Install plugin dependencies
+        run: |
+          cd internal-plugins/setting
+          pnpm install
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Linux
+        run: pnpm run build:linux
+
+      - name: Verify artifacts
+        run: |
+          echo '=== 构建产物 ==='
+          ls -lh dist/*.AppImage dist/*.deb dist/*.rpm 2>&1
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+            dist/*.rpm
+            dist/*.yml
+            dist/*.blockmap
+          if-no-files-found: warn
