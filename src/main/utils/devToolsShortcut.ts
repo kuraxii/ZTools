@@ -1,6 +1,7 @@
 import { globalShortcut } from 'electron'
 import { platform } from '@electron-toolkit/utils'
 import databaseAPI from '../api/shared/database'
+import { getShortcutBackend } from '../core/shortcutBackend'
 
 export type DevToolsMode = 'right' | 'bottom' | 'undocked' | 'detach'
 
@@ -35,6 +36,13 @@ class DevToolsShortcutManager {
     target: Electron.WebContents,
     toggleHandler?: (target: Electron.WebContents) => void | Promise<void>
   ): void {
+    if (getShortcutBackend() === 'portal') {
+      // portal 后端：快捷键已在 kglobalaccel 中永久注册，此处仅追踪当前目标
+      this.currentTarget = target
+      this.currentToggleHandler = toggleHandler ?? null
+      return
+    }
+
     // 如果已经注册且目标相同，无需重复注册
     if (this.currentTarget?.id === target.id && globalShortcut.isRegistered(this.shortcut)) {
       this.currentToggleHandler = toggleHandler ?? null
@@ -73,11 +81,41 @@ class DevToolsShortcutManager {
    * 注销快捷键
    */
   public unregister(): void {
-    if (globalShortcut.isRegistered(this.shortcut)) {
-      globalShortcut.unregister(this.shortcut)
+    if (getShortcutBackend() !== 'portal') {
+      if (globalShortcut.isRegistered(this.shortcut)) {
+        globalShortcut.unregister(this.shortcut)
+      }
     }
     this.currentTarget = null
     this.currentToggleHandler = null
+  }
+
+  /**
+   * 切换当前目标 WebContents 的开发者工具（供 portal 回调使用）
+   * @returns 无返回值。
+   */
+  public toggleForCurrentTarget(): void {
+    if (this.currentTarget && !this.currentTarget.isDestroyed()) {
+      console.log(`[DevTools] portal 触发开发者工具，目标: ${this.currentTarget.id}`)
+      if (this.currentToggleHandler) {
+        void this.currentToggleHandler(this.currentTarget)
+        return
+      }
+      if (this.currentTarget.isDevToolsOpened()) {
+        this.currentTarget.closeDevTools()
+      } else {
+        const mode = getDevToolsMode()
+        this.currentTarget.openDevTools({ mode })
+      }
+    }
+  }
+
+  /**
+   * 获取快捷键字符串（供 portal 注册用）
+   * @returns Electron 格式的快捷键
+   */
+  public getShortcut(): string {
+    return this.shortcut
   }
 }
 

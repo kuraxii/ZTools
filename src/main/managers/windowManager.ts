@@ -29,6 +29,7 @@ import detachedWindowManager from '../core/detachedWindowManager'
 import superPanelManager from '../core/superPanelManager'
 import { applyWindowMaterial, getDefaultWindowMaterial } from '../utils/windowUtils'
 import pluginManager from './pluginManager'
+import devToolsShortcut from '../utils/devToolsShortcut'
 import {
   normalizeCompactMainWindowHeader,
   resolveMainWindowHeaderHeight
@@ -1520,6 +1521,12 @@ class WindowManager {
             callback: () => {
               if (!dndManager.shouldIgnoreHotkeys()) this.toggleWindow()
             }
+          },
+          {
+            id: 'toggle-devtools',
+            accelerator: devToolsShortcut.getShortcut(),
+            description: '切换开发者工具',
+            callback: () => devToolsShortcut.toggleForCurrentTarget()
           }
         ],
         { forceSetKeys: options?.forceSetKeys === true }
